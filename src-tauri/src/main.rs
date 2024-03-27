@@ -3,8 +3,6 @@
 
 use ureq::Error;
 use std::fs;
-use std::path::Path;
-
 
 const MOONCAKE_HOST:&str = "https://mooncake-v2.shizhuang-inc.com";
 
@@ -39,14 +37,13 @@ fn get_api_info_by_api_id(id:&str,cookie:&str)->Result<String,()>{
     .set("cookie", cookie)
     .call(){
         Ok(res)=>res,
-        Err(Error::Status(_,_))=>panic!("1 staus"),
+        Err(Error::Status(_,_))=>panic!("1 status"),
         Err(Error::Transport(_))=>panic!("1 transport")
     };
     let response = match response.into_string() {
         Ok(res)=>res,
         Err(_)=>panic!("io error"),
     };
-    println!("{response:#?}");
     Ok(response)
 }
 
@@ -70,12 +67,14 @@ fn get_api_type_by_body(lang:&str,query_schema:&str,name:&str,req_schema:&str,re
         Ok(res)=>res,
         Err(_)=>panic!("io error"),
     };
-    println!("{response:#?}");
     Ok(response)
 }
 
 #[tauri::command]
 fn write_api_type_into_directory(path:&str,req_schema:Vec<&str>,res_schema:Vec<&str>,req_file_name:&str,res_file_name:&str)->Result<bool, ()>{
+    println!("path:{}",path);
+    println!("req_file_name:{}",req_file_name);
+    println!("res_file_name:{}",res_file_name);
     if req_schema.len() > 0{
         match fs::write([path,req_file_name].concat(), req_schema.join("\n")){
             Ok(_)=>{},
@@ -103,6 +102,7 @@ fn create_nest_project_api_directory(path:&str,dir_path:Vec<Vec<&str>>)->Result<
     }
     Ok(true)
 }
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![greet,get_api_by_project_id,get_api_info_by_api_id,get_api_type_by_body,write_api_type_into_directory,create_nest_project_api_directory])
