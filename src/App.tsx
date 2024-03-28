@@ -1,7 +1,11 @@
 import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { open } from '@tauri-apps/api/dialog';
-import { Button, Form, Space, Input, Select, Spin, Modal, message, Progress } from 'antd';
+import { Button, Form, Space, Input, Select, Spin, Modal, message, Progress, Tree } from 'antd';
+import { flatten } from './algorithm/flatten'
+import { flattenStruct } from './algorithm/flattenStruct'
+import { createNestProjectApiMap } from './algorithm/createNestProjectApiMap'
+import { getProjectApiTypeDirectory, LeafNodeMap } from './algorithm/getProjectApiTypeDirectory'
 import type { Response as GetApiByProjectIdResponse } from './types/getApiByProjectId';
 import type { Response as GetApiInfoByApiIdResponse } from './types/getApiInfoByApiId';
 import type { Response as GetApiTypeByBodyResponse } from './types/getApiTypeByBody';
@@ -15,78 +19,14 @@ type FieldType = {
   resSchema: string;
 };
 
-type Children = Array<number | { title: string; children: Children }>;
-
 type PathValueStruct = Record<string, Array<number>>
 type PathInfoStruct = Record<string, Array<Record<any, any>>>
 
-const LeafNodeMap: Record<string, { title: string, children: Array<number> }> = {}
 const PathValueObj: PathValueStruct = {}
 const PathInfoObj: PathInfoStruct = {}
 
-const createNestProjectApiMap = (data: Array<any>) => {
-  if (data.every(item => Number.isInteger(item.key))) return data.map(item => item.key)
-  return data.map(item => {
-    return {
-      title: item.title,
-      key: item.key,
-      children: item.children.map((self: any) => {
-        if (!Number.isInteger(self.key)) return { title: self.title, key: self.key, children: createNestProjectApiMap(self.children) }
-        return self.key
-      })
-    }
-  })
-}
-
-const getProjectApiTypeDirectory = (parent: string, data: Array<any>): string[] => {
-  if (!data || data.every(item => Number.isInteger(item))) return []
-  if (parent) {
-    return data
-      .filter((item) => !Number.isInteger(item))
-      .map(
-        (item) => {
-          if (item.children.some((i: any) => Number.isInteger(i))) {
-            Reflect.set(LeafNodeMap, item.key, { title: `${parent}/${item.title}`, children: [] })
-          }
-          return `${parent}/${item.title}/,${getProjectApiTypeDirectory(`${parent}/${item.title}`, item.children)}`
-        }
-      );
-  }
-  return data.filter(item => !Number.isInteger(item)).map(item => {
-    if (item.children.some((i: any) => Number.isInteger(i))) {
-      Reflect.set(LeafNodeMap, item.key, { title: item.title, children: [] })
-    }
-    return !`${getProjectApiTypeDirectory(item.title, item.children)}` ? item.title : `${getProjectApiTypeDirectory(item.title, item.children)}`
-  })
-}
-
-const flattenStruct = (arr: Array<any>): any => {
-  return arr.map((item) => {
-    if (typeof item === "object" && Reflect.has(item, "children")) {
-      return [
-        {
-          title: item.title,
-          key: item.key,
-          children: item.children.filter((i: any) =>
-            Number.isInteger(i),
-          ),
-        },
-      ].concat(flattenStruct(item.children));
-    }
-  });
-};
-
-function flatten(arr: Array<any>): Array<any> {
-  return arr.reduce((acc, cur) => {
-    if (Array.isArray(cur)) {
-      return acc.concat(flatten(cur));
-    }
-    return acc.concat(cur);
-  }, []);
-}
-
-function getReqParams(obj:Record<string,unknown>){
-  return String(obj.req_body || obj.req_body_other || obj.req_query || obj.req_params)
+function getReqBody(obj: Record<string, unknown>) {
+  return String(obj.req_body || obj.req_body_other)
 }
 function App() {
   const [messageApi, contextHolder] = message.useMessage();
@@ -96,6 +36,8 @@ function App() {
   const [percent, setPercent] = useState<number>(0)
   const [spinning, setSpinning] = useState<boolean>(false)
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false)
+  const [treeEditorOpen, setTreeEditorOpen] = useState<boolean>(false)
+  const [treeData, setTreeData] = useState<Array<any>>([])
   const projectAPIMap = useRef<Array<{
     title: string;
     children: number[];
@@ -106,7 +48,7 @@ function App() {
     name: string,
     reqSchema: string,
     resSchema: string,
-    querySchema: "{\n  \"required\": [],\n  \"title\": \"req query\",\n  \"type\": \"object\",\n  \"properties\": {}\n}"
+    querySchema: string
   }>({
     lang: 'ts',
     querySchema: "{\n  \"required\": [],\n  \"title\": \"req query\",\n  \"type\": \"object\",\n  \"properties\": {}\n}",
@@ -114,7 +56,7 @@ function App() {
     reqSchema: '',
     resSchema: ''
   })
-  const apiTypeInfo = useRef<{ reqSchema: Array<string>, resSchema: Array<string> }>({ reqSchema: [], resSchema: [] })
+  const apiTypeInfo = useRef<{ reqSchema: Array<string>, resSchema: Array<string>, querySchema: Array<string> }>({ reqSchema: [], resSchema: [], querySchema: [] })
 
   async function getDir() {
     const selected = await open({ directory: true, multiple: false }) as string
@@ -127,10 +69,10 @@ function App() {
       cancelText: '不，我不需要自定义',
       centered: true
     })
+    const response = await invoke('get_api_by_project_id', { projectId: form.getFieldValue('id'), cookie: form.getFieldValue('cookie') }) as string
+    const res = JSON.parse(response) as GetApiByProjectIdResponse
     if (!needCustomize) {
-      const response = await invoke('get_api_by_project_id', { projectId: form.getFieldValue('id'), cookie: form.getFieldValue('cookie') }) as string
       setPercent(100 / 3)
-      const res = JSON.parse(response) as GetApiByProjectIdResponse
       projectAPIMap.current = createNestProjectApiMap(res.data)
       projectAPIDirectory.current = getProjectApiTypeDirectory('', projectAPIMap.current).map(item => item.split('/,')).map(item => item.filter(Boolean).map(item => item.replace(/,/, '')))
       const valueMap = flatten(flattenStruct(projectAPIMap.current)).filter(item => item && Reflect.has(item, 'children') && item.children.length)
@@ -150,9 +92,9 @@ function App() {
             return invoke('get_api_info_by_api_id', { id: String(id), cookie: form.getFieldValue('cookie') }).then(response => {
               const res = JSON.parse(response as string) as GetApiInfoByApiIdResponse
               if (!Object.keys(res.data).length) return (messageApi.error("获取信息返回值data为空"), setSpinning(false))
-              if(Array.isArray(Reflect.get(PathInfoObj,item))){
-                Reflect.set(PathInfoObj, item, Reflect.get(PathInfoObj,item).concat(res.data))
-              }else{
+              if (Array.isArray(Reflect.get(PathInfoObj, item))) {
+                Reflect.set(PathInfoObj, item, Reflect.get(PathInfoObj, item).concat(res.data))
+              } else {
                 Reflect.set(PathInfoObj, item, [res.data])
               }
               return item
@@ -167,22 +109,36 @@ function App() {
             }
           }).catch((reason) => (messageApi.error(reason), setSpinning(false)))
         })).then(async () => {
-          const result = await Promise.all(Object.keys(PathInfoObj).map(async key=>{
-            return Promise.all(Reflect.get(PathInfoObj,key).map(async item=>{
-              const getTypeByApiSchemaBody:Record<any,any> = {
+          const result = await Promise.all(Object.keys(PathInfoObj).map(async key => {
+            return Promise.all(Reflect.get(PathInfoObj, key).map(async item => {
+              const getTypeByApiSchemaBody: Record<any, any> = {
                 lang: 'ts',
                 querySchema: "{\n  \"required\": [],\n  \"title\": \"req query\",\n  \"type\": \"object\",\n  \"properties\": {}\n}"
               }
-              const apiTypeInfo:Record<any,any> = {}
-              getTypeByApiSchemaBody.name =item.path.split('/').at(-1)!
-              getTypeByApiSchemaBody.reqSchema = getReqParams(item) as string
-              getTypeByApiSchemaBody.resSchema =item.res_body
+              const properties:Record<any,any> = {};
+              const hasQueryParams = Array.isArray(item.req_query) && item.req_query.length
+              if(hasQueryParams){
+                item.req_query.forEach((item:any)=>{
+                  Reflect.set(properties,item.name,{description:item.description,type:item.type})
+                })
+                hasQueryParams && (getTypeByApiSchemaBody.querySchema = JSON.stringify({
+                  properties,
+                  required: [],
+                  title: "req query",
+                  type: "object"
+                }))
+              }
+              const apiTypeInfo: Record<any, any> = {}
+              getTypeByApiSchemaBody.name = item.path.split('/').at(-1)!
+              getTypeByApiSchemaBody.reqSchema = getReqBody(item) as string
+              getTypeByApiSchemaBody.resSchema = item.res_body
               const response = await invoke('get_api_type_by_body', { ...getTypeByApiSchemaBody, cookie: form.getFieldValue('cookie') })
               const res = JSON.parse(response as string) as GetApiTypeByBodyResponse
               if (!Object.keys(res.data).length) return (messageApi.error("获取接口类型返回值data为空"), setSpinning(false))
               apiTypeInfo.reqSchema = res.data.reqSchema
               apiTypeInfo.resSchema = res.data.resSchema
-              return await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), reqSchema: apiTypeInfo.reqSchema, resSchema: apiTypeInfo.resSchema, reqFileName: `/${key}/${item.title.replace(/\//, '')}Req.ts`, resFileName: `/${key}/${item.title.replace(/\//, '')}Res.ts`})
+              apiTypeInfo.querySchema = res.data.querySchema
+              return await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), querySchema:apiTypeInfo.querySchema,reqSchema: apiTypeInfo.reqSchema, resSchema: apiTypeInfo.resSchema, reqFileName: `/${key}/${item.title.replace(/\//, '')}Req.ts`, resFileName: `/${key}/${item.title.replace(/\//, '')}Res.ts` })
             }))
           }))
           if (result.every(Boolean)) {
@@ -193,6 +149,9 @@ function App() {
           setTimeout(() => (setSpinning(false), setPercent(0)), 2000)
         }).catch((reason) => (messageApi.error(reason), setSpinning(false)))
       }
+    } else {
+      setTreeData(res.data)
+      setTreeEditorOpen(true)
     }
   }
 
@@ -206,8 +165,21 @@ function App() {
     const res = JSON.parse(response) as GetApiInfoByApiIdResponse
     if (!Object.keys(res.data).length) return (messageApi.error("获取信息返回值data为空"), setSpinning(false))
     getTypeByApiSchemaBody.current.name = res.data.path.split('/').at(-1)!
-    getTypeByApiSchemaBody.current.reqSchema = getReqParams(res.data) as string
-    if (!getTypeByApiSchemaBody.current.reqSchema) messageApi.info('此接口没有请求参数')
+    getTypeByApiSchemaBody.current.reqSchema = getReqBody(res.data) as string
+    const hasQueryParams = Array.isArray(res.data.req_query) && res.data.req_query.length
+    const properties:Record<any,any> = {};
+    if(hasQueryParams){
+      res.data.req_query.forEach(item=>{
+        Reflect.set(properties,item.name,{description:item.description,type:item.type})
+      })
+      hasQueryParams && (getTypeByApiSchemaBody.current.querySchema = JSON.stringify({
+        properties,
+        required: [],
+        title: "req query",
+        type: "object"
+      }))
+    }
+    if (!getTypeByApiSchemaBody.current.reqSchema && !getTypeByApiSchemaBody.current.querySchema) messageApi.info('此接口没有请求参数')
     getTypeByApiSchemaBody.current.resSchema = res.data.res_body
     if (!getTypeByApiSchemaBody.current.resSchema) messageApi.info('此接口没有响应参数')
     await getApiTypeByBody()
@@ -220,11 +192,12 @@ function App() {
     if (!Object.keys(res.data).length) return (messageApi.error("获取接口类型返回值data为空"), setSpinning(false))
     apiTypeInfo.current.reqSchema = res.data.reqSchema
     apiTypeInfo.current.resSchema = res.data.resSchema
+    apiTypeInfo.current.querySchema = res.data.querySchema
     await writeApiTypeIntoDirectory()
   }
 
   async function writeApiTypeIntoDirectory() {
-    await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), reqSchema: apiTypeInfo.current.reqSchema, resSchema: apiTypeInfo.current.resSchema, reqFileName: `/${form.getFieldValue('reqSchema')}`, resFileName: `/${form.getFieldValue('resSchema')}` })
+    await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), querySchema:apiTypeInfo.current.querySchema,reqSchema: apiTypeInfo.current.reqSchema, resSchema: apiTypeInfo.current.resSchema, reqFileName: `/${form.getFieldValue('reqSchema')}`, resFileName: `/${form.getFieldValue('resSchema')}` })
     setTimeout(() => setPercent(100), 1000)
     setTimeout(() => (setSpinning(false), setPercent(0)), 2000)
     messageApi.success('执行成功！')
@@ -379,6 +352,11 @@ function App() {
         <div>你选择了<span style={{ color: '#1677ff' }}>{genType === '0' ? '接口' : '项目'}级别</span>的策略</div>
         <div>你输入的<span style={{ color: '#1677ff' }}>{genType === '0' ? '接口' : '项目'}ID</span>是{form.getFieldValue('id')}</div>
         <div>你选择的存放生成类型的目录是<span style={{ color: '#1677ff' }}>{form.getFieldValue('dir_path')}</span></div>
+      </Modal>
+      <Modal centered title='树形编辑器' open={treeEditorOpen} onCancel={() => setTreeEditorOpen(false)} maskClosable={false}>
+        <Tree
+          treeData={treeData}
+        />
       </Modal>
       <Spin spinning={spinning} fullscreen />
       {spinning && <Progress percent={percent} type="circle" />}

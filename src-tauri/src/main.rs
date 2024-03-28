@@ -19,7 +19,7 @@ fn get_api_by_project_id(project_id:&str,cookie:&str)->Result<String,()>{
     .set("cookie", cookie)
     .call(){
         Ok(res)=>res,
-        Err(Error::Status(_,_))=>panic!("1 staus"),
+        Err(Error::Status(_,_))=>panic!("1 status"),
         Err(Error::Transport(_))=>panic!("1 transport")
     };
     let response = match response.into_string() {
@@ -60,7 +60,7 @@ fn get_api_type_by_body(lang:&str,query_schema:&str,name:&str,req_schema:&str,re
     "resSchema":res_schema
     })){
         Ok(res)=>res,
-        Err(Error::Status(_,_))=>panic!("1 staus"),
+        Err(Error::Status(_,_))=>panic!("1 status"),
         Err(Error::Transport(_))=>panic!("1 transport")
     };
     let response = match response.into_string() {
@@ -71,12 +71,20 @@ fn get_api_type_by_body(lang:&str,query_schema:&str,name:&str,req_schema:&str,re
 }
 
 #[tauri::command]
-fn write_api_type_into_directory(path:&str,req_schema:Vec<&str>,res_schema:Vec<&str>,req_file_name:&str,res_file_name:&str)->Result<bool, ()>{
+fn write_api_type_into_directory(path:&str,query_schema:Vec<&str>,req_schema:Vec<&str>,res_schema:Vec<&str>,req_file_name:&str,res_file_name:&str)->Result<bool, ()>{
     println!("path:{}",path);
     println!("req_file_name:{}",req_file_name);
     println!("res_file_name:{}",res_file_name);
-    if req_schema.len() > 0{
-        match fs::write([path,req_file_name].concat(), req_schema.join("\n")){
+    if req_schema.len() > 0 || query_schema.len() > 0{
+        let mut request_schema:Vec<&str> = vec![];
+        req_schema.iter().for_each(|x|{
+            request_schema.push(*x)
+        }); 
+        query_schema.iter().for_each(|x|{
+            request_schema.push(*x)
+        }); 
+        println!("request_schema:{:?}",request_schema);
+        match fs::write([path,req_file_name].concat(), request_schema.join("\n")){
             Ok(_)=>{},
             Err(_)=>{}
         };
