@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { open } from '@tauri-apps/api/dialog';
-import { Button, Form, Space, Input, Select, Spin, Modal, message, Progress, Tree } from 'antd';
+import { Button, Form, Space, Input, Select, Spin, Modal, message, Progress } from 'antd';
 import { flatten } from './algorithm/flatten'
 import { flattenStruct } from './algorithm/flattenStruct'
-import { createNestProjectApiMap } from './algorithm/createNestProjectApiMap'
+import { createNestProjectApiMap,apiTitleKeyMap } from './algorithm/createNestProjectApiMap'
 import { getProjectApiTypeDirectory, LeafNodeMap } from './algorithm/getProjectApiTypeDirectory'
 import type { Response as GetApiByProjectIdResponse } from './types/getApiByProjectId';
 import type { Response as GetApiInfoByApiIdResponse } from './types/getApiInfoByApiId';
@@ -28,7 +28,9 @@ const PathInfoObj: PathInfoStruct = {}
 function getReqBody(obj: Record<string, unknown>) {
   return String(obj.req_body || obj.req_body_other)
 }
+
 function App() {
+  const [, setRefresh] = useState<string>('')
   const [messageApi, contextHolder] = message.useMessage();
   const [modal, contextModalHolder] = Modal.useModal();
   const [form] = Form.useForm<FieldType>()
@@ -58,10 +60,105 @@ function App() {
   })
   const apiTypeInfo = useRef<{ reqSchema: Array<string>, resSchema: Array<string>, querySchema: Array<string> }>({ reqSchema: [], resSchema: [], querySchema: [] })
 
+  function renderTree(treeData: Array<any>) {
+    return treeData.map((item: any) => {
+      return (<div key={item.key}>
+        <Input onChange={(e) => (setRefresh(`${item.title}${+new Date()}`), item.title = e.target.value)} variant="filled" id={String(item.key)} style={{ width: 'auto' }} size="small" value={item.title}></Input>
+        <div style={{ marginLeft: `${item.level}vw`, marginTop: '1vw' }}>{renderTree(item.children)}</div>
+      </div>)
+    })
+  }
+
   async function getDir() {
     const selected = await open({ directory: true, multiple: false }) as string
     form.setFieldValue('dir_path', selected)
   }
+
+  async function fetchProjectApi(data: Array<any>) {
+    setPercent(100 / 3)
+    projectAPIMap.current = createNestProjectApiMap(data)
+    projectAPIDirectory.current = getProjectApiTypeDirectory('', projectAPIMap.current).map(item => item.split('/,')).map(item => item.filter(Boolean).map(item => item.replace(/,/, '')))
+    alert(JSON.stringify(apiTitleKeyMap))
+    const valueMap = flatten(flattenStruct(projectAPIMap.current)).filter(item => item && Reflect.has(item, 'children') && item.children.length)
+    valueMap.forEach(item => {
+      const title = Reflect.get(LeafNodeMap, item.key).title
+      Reflect.set(LeafNodeMap, item.key, { title, children: item.children })
+    })
+    Object.keys(LeafNodeMap).forEach(item => {
+      Reflect.set(PathValueObj, Reflect.get(LeafNodeMap, item).title, Reflect.get(LeafNodeMap, item).children)
+    })
+    const createDirSuccess = await createNestProjectApiDirectory() as Awaited<boolean>
+    if (createDirSuccess) {
+      setPercent(200 / 3)
+      messageApi.success('项目目录生成成功')
+      return Promise.all(Object.keys(PathValueObj).map(async (item) => {
+        return Promise.all(Reflect.get(PathValueObj, item).map(async id => {
+          return invoke('get_api_info_by_api_id', { id: String(id), cookie: form.getFieldValue('cookie') }).then(response => {
+            const res = JSON.parse(response as string) as GetApiInfoByApiIdResponse
+            if (!Object.keys(res.data).length) return (messageApi.error("获取信息返回值data为空"), setSpinning(false))
+            if(Reflect.get(apiTitleKeyMap,res.data.id)){
+              res.data.title = Reflect.get(apiTitleKeyMap,res.data.id)
+            }
+            if (Array.isArray(Reflect.get(PathInfoObj, item))) {
+              Reflect.set(PathInfoObj, item, Reflect.get(PathInfoObj, item).concat(res.data))
+            } else {
+              Reflect.set(PathInfoObj, item, [res.data])
+            }
+            return item
+          })
+        })).then(result => {
+          if (result.every(item => !!item)) {
+            messageApi.success(`${item}目录下接口信息获取成功`)
+            return result
+          } else {
+            messageApi.error(`${item}目录下接口信息获取失败`)
+            setSpinning(false)
+          }
+        }).catch((reason) => (messageApi.error(reason), setSpinning(false)))
+      })).then(async () => {
+        const result = await Promise.all(Object.keys(PathInfoObj).map(async key => {
+          return Promise.all(Reflect.get(PathInfoObj, key).map(async item => {
+            const getTypeByApiSchemaBody: Record<any, any> = {
+              lang: 'ts',
+              querySchema: "{\n  \"required\": [],\n  \"title\": \"req query\",\n  \"type\": \"object\",\n  \"properties\": {}\n}"
+            }
+            const properties: Record<any, any> = {};
+            const hasQueryParams = Array.isArray(item.req_query) && item.req_query.length
+            if (hasQueryParams) {
+              item.req_query.forEach((item: any) => {
+                Reflect.set(properties, item.name, { description: item.description, type: item.type })
+              })
+              hasQueryParams && (getTypeByApiSchemaBody.querySchema = JSON.stringify({
+                properties,
+                required: [],
+                title: "req query",
+                type: "object"
+              }))
+            }
+            const apiTypeInfo: Record<any, any> = {}
+            getTypeByApiSchemaBody.name = item.path.split('/').at(-1)!
+            getTypeByApiSchemaBody.reqSchema = getReqBody(item) as string
+            getTypeByApiSchemaBody.resSchema = item.res_body
+            const response = await invoke('get_api_type_by_body', { ...getTypeByApiSchemaBody, cookie: form.getFieldValue('cookie') })
+            const res = JSON.parse(response as string) as GetApiTypeByBodyResponse
+            if (!Object.keys(res.data).length) return (messageApi.error("获取接口类型返回值data为空"), setSpinning(false))
+            apiTypeInfo.reqSchema = res.data.reqSchema
+            apiTypeInfo.resSchema = res.data.resSchema
+            apiTypeInfo.querySchema = res.data.querySchema
+            return await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), querySchema: apiTypeInfo.querySchema, reqSchema: apiTypeInfo.reqSchema, resSchema: apiTypeInfo.resSchema, reqFileName: `/${key}/${item.title.replace(/\//, '')}Req.ts`, resFileName: `/${key}/${item.title.replace(/\//, '')}Res.ts` })
+          }))
+        }))
+        if (result.every(Boolean)) {
+          setTimeout(() => setPercent(100), 1000)
+          setTimeout(() => (setSpinning(false), setPercent(0)), 2000)
+          messageApi.success('类型文件生成成功！')
+        }
+        setTimeout(() => (setSpinning(false), setPercent(0)), 2000)
+      }).catch((reason) => (messageApi.error(reason), setSpinning(false)))
+    }
+    return Promise.reject(new Error('创建目录失败！'))
+  }
+
   async function getApiByProjectId() {
     const needCustomize = await modal.confirm({
       title: '是否自定义生成的文件名',
@@ -72,83 +169,7 @@ function App() {
     const response = await invoke('get_api_by_project_id', { projectId: form.getFieldValue('id'), cookie: form.getFieldValue('cookie') }) as string
     const res = JSON.parse(response) as GetApiByProjectIdResponse
     if (!needCustomize) {
-      setPercent(100 / 3)
-      projectAPIMap.current = createNestProjectApiMap(res.data)
-      projectAPIDirectory.current = getProjectApiTypeDirectory('', projectAPIMap.current).map(item => item.split('/,')).map(item => item.filter(Boolean).map(item => item.replace(/,/, '')))
-      const valueMap = flatten(flattenStruct(projectAPIMap.current)).filter(item => item && Reflect.has(item, 'children') && item.children.length)
-      valueMap.forEach(item => {
-        const title = Reflect.get(LeafNodeMap, item.key).title
-        Reflect.set(LeafNodeMap, item.key, { title, children: item.children })
-      })
-      Object.keys(LeafNodeMap).forEach(item => {
-        Reflect.set(PathValueObj, Reflect.get(LeafNodeMap, item).title, Reflect.get(LeafNodeMap, item).children)
-      })
-      const createDirSuccess = await createNestProjectApiDirectory()
-      if (createDirSuccess) {
-        setPercent(200 / 3)
-        messageApi.success('项目目录生成成功')
-        Promise.all(Object.keys(PathValueObj).map(async (item) => {
-          return Promise.all(Reflect.get(PathValueObj, item).map(async id => {
-            return invoke('get_api_info_by_api_id', { id: String(id), cookie: form.getFieldValue('cookie') }).then(response => {
-              const res = JSON.parse(response as string) as GetApiInfoByApiIdResponse
-              if (!Object.keys(res.data).length) return (messageApi.error("获取信息返回值data为空"), setSpinning(false))
-              if (Array.isArray(Reflect.get(PathInfoObj, item))) {
-                Reflect.set(PathInfoObj, item, Reflect.get(PathInfoObj, item).concat(res.data))
-              } else {
-                Reflect.set(PathInfoObj, item, [res.data])
-              }
-              return item
-            })
-          })).then(result => {
-            if (result.every(item => !!item)) {
-              messageApi.success(`${item}目录下接口信息获取成功`)
-              return result
-            } else {
-              messageApi.error(`${item}目录下接口信息获取失败`)
-              setSpinning(false)
-            }
-          }).catch((reason) => (messageApi.error(reason), setSpinning(false)))
-        })).then(async () => {
-          const result = await Promise.all(Object.keys(PathInfoObj).map(async key => {
-            return Promise.all(Reflect.get(PathInfoObj, key).map(async item => {
-              const getTypeByApiSchemaBody: Record<any, any> = {
-                lang: 'ts',
-                querySchema: "{\n  \"required\": [],\n  \"title\": \"req query\",\n  \"type\": \"object\",\n  \"properties\": {}\n}"
-              }
-              const properties:Record<any,any> = {};
-              const hasQueryParams = Array.isArray(item.req_query) && item.req_query.length
-              if(hasQueryParams){
-                item.req_query.forEach((item:any)=>{
-                  Reflect.set(properties,item.name,{description:item.description,type:item.type})
-                })
-                hasQueryParams && (getTypeByApiSchemaBody.querySchema = JSON.stringify({
-                  properties,
-                  required: [],
-                  title: "req query",
-                  type: "object"
-                }))
-              }
-              const apiTypeInfo: Record<any, any> = {}
-              getTypeByApiSchemaBody.name = item.path.split('/').at(-1)!
-              getTypeByApiSchemaBody.reqSchema = getReqBody(item) as string
-              getTypeByApiSchemaBody.resSchema = item.res_body
-              const response = await invoke('get_api_type_by_body', { ...getTypeByApiSchemaBody, cookie: form.getFieldValue('cookie') })
-              const res = JSON.parse(response as string) as GetApiTypeByBodyResponse
-              if (!Object.keys(res.data).length) return (messageApi.error("获取接口类型返回值data为空"), setSpinning(false))
-              apiTypeInfo.reqSchema = res.data.reqSchema
-              apiTypeInfo.resSchema = res.data.resSchema
-              apiTypeInfo.querySchema = res.data.querySchema
-              return await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), querySchema:apiTypeInfo.querySchema,reqSchema: apiTypeInfo.reqSchema, resSchema: apiTypeInfo.resSchema, reqFileName: `/${key}/${item.title.replace(/\//, '')}Req.ts`, resFileName: `/${key}/${item.title.replace(/\//, '')}Res.ts` })
-            }))
-          }))
-          if (result.every(Boolean)) {
-            setTimeout(() => setPercent(100), 1000)
-            setTimeout(() => (setSpinning(false), setPercent(0)), 2000)
-            messageApi.success('类型文件生成成功！')
-          }
-          setTimeout(() => (setSpinning(false), setPercent(0)), 2000)
-        }).catch((reason) => (messageApi.error(reason), setSpinning(false)))
-      }
+      fetchProjectApi(res.data)
     } else {
       setTreeData(res.data)
       setTreeEditorOpen(true)
@@ -167,10 +188,10 @@ function App() {
     getTypeByApiSchemaBody.current.name = res.data.path.split('/').at(-1)!
     getTypeByApiSchemaBody.current.reqSchema = getReqBody(res.data) as string
     const hasQueryParams = Array.isArray(res.data.req_query) && res.data.req_query.length
-    const properties:Record<any,any> = {};
-    if(hasQueryParams){
-      res.data.req_query.forEach(item=>{
-        Reflect.set(properties,item.name,{description:item.description,type:item.type})
+    const properties: Record<any, any> = {};
+    if (hasQueryParams) {
+      res.data.req_query.forEach(item => {
+        Reflect.set(properties, item.name, { description: item.description, type: item.type })
       })
       hasQueryParams && (getTypeByApiSchemaBody.current.querySchema = JSON.stringify({
         properties,
@@ -197,7 +218,7 @@ function App() {
   }
 
   async function writeApiTypeIntoDirectory() {
-    await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), querySchema:apiTypeInfo.current.querySchema,reqSchema: apiTypeInfo.current.reqSchema, resSchema: apiTypeInfo.current.resSchema, reqFileName: `/${form.getFieldValue('reqSchema')}`, resFileName: `/${form.getFieldValue('resSchema')}` })
+    await invoke('write_api_type_into_directory', { path: form.getFieldValue('dir_path'), querySchema: apiTypeInfo.current.querySchema, reqSchema: apiTypeInfo.current.reqSchema, resSchema: apiTypeInfo.current.resSchema, reqFileName: `/${form.getFieldValue('reqSchema')}`, resFileName: `/${form.getFieldValue('resSchema')}` })
     setTimeout(() => setPercent(100), 1000)
     setTimeout(() => (setSpinning(false), setPercent(0)), 2000)
     messageApi.success('执行成功！')
@@ -211,6 +232,18 @@ function App() {
 
   const onSubmit = () => {
     form.validateFields().then(() => setIsModalOpen(true))
+  }
+
+  const onCancelTreeEditorModal = () => {
+    setSpinning(false)
+    setPercent(0)
+    setTreeEditorOpen(false)
+  }
+
+  const onTreeEditorModalOk = () => {
+    fetchProjectApi(treeData).then(()=>{
+      setTreeEditorOpen(false)
+    }).catch((reason)=>messageApi.error(reason))
   }
 
   return (
@@ -353,10 +386,8 @@ function App() {
         <div>你输入的<span style={{ color: '#1677ff' }}>{genType === '0' ? '接口' : '项目'}ID</span>是{form.getFieldValue('id')}</div>
         <div>你选择的存放生成类型的目录是<span style={{ color: '#1677ff' }}>{form.getFieldValue('dir_path')}</span></div>
       </Modal>
-      <Modal centered title='树形编辑器' open={treeEditorOpen} onCancel={() => setTreeEditorOpen(false)} maskClosable={false}>
-        <Tree
-          treeData={treeData}
-        />
+      <Modal onOk={onTreeEditorModalOk} centered title='Api Tree Editor' open={treeEditorOpen} onCancel={onCancelTreeEditorModal} maskClosable={false}>
+        {renderTree(treeData)}
       </Modal>
       <Spin spinning={spinning} fullscreen />
       {spinning && <Progress percent={percent} type="circle" />}

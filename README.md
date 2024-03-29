@@ -12,7 +12,8 @@ This template should help get you started developing with Tauri, React and Types
 2. pnpm tauri dev
 
 ## TODO
-1. 项目级别的类型生成
-    - ✅接口的分类嵌套问题
-    - 可自定义类型文件名称
-    - ✅构建路径与文件的映射表
+1. 接口级别的类型生成✅
+2. 项目级别的类型生成
+    - 接口的分类嵌套问题✅
+    - 可自定义类型文件名称✅
+    - 构建路径与文件的映射表✅
