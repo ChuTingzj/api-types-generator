@@ -4,7 +4,7 @@
 use ureq::Error;
 use std::fs;
 
-const MOONCAKE_HOST:&str = "https://mooncake-v2.shizhuang-inc.com";
+const MOONCAKE_HOST:&str = "MOONCAKE_HOST";
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
