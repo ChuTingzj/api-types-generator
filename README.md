@@ -11,6 +11,9 @@ This template should help get you started developing with Tauri, React and Types
 1. pnpm i
 2. pnpm tauri dev
 
+## Build
+pnpm tauri build
+
 ## TODO
 1. 接口级别的类型生成✅
 2. 项目级别的类型生成
