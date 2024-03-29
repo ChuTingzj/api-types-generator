@@ -11,15 +11,23 @@
   },
   "tauri": {
     "allowlist": {
-      "all": true,
-      "shell": {
-        "all": false,
-        "open": true
-      },
+      "all": false,
       "http": {
         "all": true,
-        "scope": ["http://**","https://**"],
+        "scope": ["https://**"],
         "request": true
+      },
+      "fs": {
+        "all": true
+      },
+      "dialog": {
+        "all": true
+      },
+      "clipboard": {
+        "readText": true
+      },
+      "notification": {
+        "all": true
       }
     },
     "windows": [
@@ -35,7 +43,7 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.tauri.dev",
+      "identifier": "com.tauri.build",
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",

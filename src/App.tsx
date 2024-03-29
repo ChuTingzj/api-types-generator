@@ -78,7 +78,6 @@ function App() {
     setPercent(100 / 3)
     projectAPIMap.current = createNestProjectApiMap(data)
     projectAPIDirectory.current = getProjectApiTypeDirectory('', projectAPIMap.current).map(item => item.split('/,')).map(item => item.filter(Boolean).map(item => item.replace(/,/, '')))
-    alert(JSON.stringify(apiTitleKeyMap))
     const valueMap = flatten(flattenStruct(projectAPIMap.current)).filter(item => item && Reflect.has(item, 'children') && item.children.length)
     valueMap.forEach(item => {
       const title = Reflect.get(LeafNodeMap, item.key).title
